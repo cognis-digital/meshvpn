@@ -1,0 +1,26 @@
+# meshvpn
+
+# Generated WireGuard configs and any local output dirs.
+out/
+*.conf.out
+build/
+dist/
+
+# Key material must never be committed. These patterns are defensive only --
+# meshvpn itself never writes real keys, but operators run `wg genkey` nearby.
+*.private
+*.public
+*.key
+*.pem
+*.priv
+wg-private-*
+
+# OS / editor noise.
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Test scratch.
+tmp/
+.test-out/
