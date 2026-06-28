@@ -13,6 +13,52 @@ it scaffolds key *placeholders* and documents the standard out-of-band
 - Maintainer: **Cognis Digital**
 - License: **COCL 1.0**
 
+
+<!-- cognis:example:start -->
+## 🔎 Example output
+
+**Sample result format** _(illustrative values — run on your own data for real findings):_
+
+```
+{
+"nodes": [
+  {
+    "id": "node-1",
+    "ip": "192.168.1.100",
+    "status": "online"
+  },
+  {
+    "id": "node-2",
+    "ip": "10.0.0.200",
+    "status": "offline"
+  },
+  {
+    "id": "node-3",
+    "ip": "172.16.31.100",
+    "status": "online"
+  }
+],
+"edges": [
+  {
+    "from": "node-1",
+    "to": "node-2",
+    "status": "established"
+  },
+  {
+    "from": "node-2",
+    "to": "node-3",
+    "status": "established"
+  }
+],
+"summary": {
+  "nodes_online": 2,
+  "edges_established": 2
+}
+}
+```
+
+<!-- cognis:example:end -->
+
 ## Why placeholders, not keys
 
 Generating private keys inside a deploy helper invites them into version
