@@ -1,205 +1,160 @@
 # meshvpn
 
-A small, dependency-free **deploy helper and healthcheck** for a WireGuard-style
-overlay network across a private fleet. From a compact fleet config it
-**validates** the topology, **generates** per-node WireGuard config files, and
-**probes** endpoints for reachability.
+**A dependency-free WireGuard overlay deploy helper** — validate a fleet, generate per-node configs, graph the topology, and healthcheck endpoints, all from one compact config. Pure POSIX-ish Bash. It **never generates, reads, or stores real private keys.**
 
-meshvpn is pure Bash. It has no runtime dependencies beyond a POSIX-ish shell,
-and it deliberately **never generates, reads, or stores real private keys** --
-it scaffolds key *placeholders* and documents the standard out-of-band
-`wg genkey` workflow. Infrastructure / defensive scope only.
+[![ci](https://github.com/cognis-digital/meshvpn/actions/workflows/ci.yml/badge.svg)](https://github.com/cognis-digital/meshvpn/actions/workflows/ci.yml)
+![lang](https://img.shields.io/badge/lang-Bash-4EAA25)
+![license](https://img.shields.io/badge/license-COCL%201.0-2ea043)
 
-- Maintainer: **Cognis Digital**
-- License: **COCL 1.0**
+Part of the **[Cognis Neural Suite](https://github.com/cognis-digital)**.
 
+## The problem
 
-<!-- cognis:example:start -->
-## 🔎 Example output
+Standing up a WireGuard overlay across a fleet means hand-writing one `wgN.conf` per node, getting the peer lists right, and keeping key material out of git. meshvpn takes a single line-oriented fleet description and does the mechanical parts — **validate → generate → graph → healthcheck** — while refusing to touch a private key. You mint keys out of band with `wg genkey` and inject them from your secret store; meshvpn only scaffolds placeholders.
 
-**Sample result format** _(illustrative values — run on your own data for real findings):_
+- No runtime dependency beyond a shell. No `python`, no `ipcalc`, no network at build time.
+- Never writes real keys. The bundled `.gitignore` blocks `*.private`/`*.key`/`*.pem`.
+- Infrastructure / defensive scope only.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `validate` | Parse + semantically validate the fleet (`--json` for machine output). |
+| `lint` | Advisory best-practice warnings (host-prefix width, default-route exit, NAT keepalive). |
+| `generate` | Emit `wgN.conf` per node for `mesh` / `hub` / `partial` topologies (placeholder keys). |
+| `graph` | Render the peering topology as `dot` / `mermaid` / `ascii`. |
+| `export` | Emit the parsed fleet as JSON (topology only, no keys). |
+| `keygen` | Print an out-of-band `wg genkey` helper script (meshvpn never runs it). |
+| `healthcheck` | List endpoint targets; `--dry-run` (no network) or `--json`; advisory TCP probe otherwise. |
+
+## Config format
+
+Line-oriented; `#` comments and blank lines ignored. The **first** `[node]` is the hub for `hub`/`partial`. Optional per-node fields: `dns`, `mtu`, `persistent_keepalive`, `group`.
+
+```ini
+listen_port = 51820                       # optional global default
+persistent_keepalive = 25                 # optional global default
+
+[node]
+name        = berlin
+endpoint    = berlin.example.net:51820     # public host:port (WireGuard is UDP)
+overlay_ip  = 10.66.0.1/32                 # this node's overlay address
+allowed_ips = 10.66.0.1/32                 # routes advertised to peers
+```
+
+See [`examples/fleet.conf`](examples/fleet.conf) (four nodes) and [`examples/datacenter.conf`](examples/datacenter.conf) (two-region `partial` topology with `dns`/`mtu`/`group`).
+
+## Example output (real, captured)
+
+Graphing the hub topology of the bundled example:
 
 ```
+$ meshvpn graph --config examples/fleet.conf --topology hub
+meshvpn topology: hub (4 nodes)
+  berlin           [hub] -> 3 peer(s): oslo lisbon tokyo
+  oslo             -> 1 peer(s): berlin
+  lisbon           -> 1 peer(s): berlin
+  tokyo            -> 1 peer(s): berlin
+```
+
+Generating a mesh — note the key **placeholders**, never real keys:
+
+```
+$ meshvpn generate --config examples/fleet.conf --topology mesh --out ./out
+$ sed -n '9,20p' out/wg0.conf
+[Interface]
+# berlin overlay address
+Address = 10.66.0.1/32
+ListenPort = 51820
+PrivateKey = <FILL_FROM_SECRET: wg genkey>
+
+[Peer]
+# peer: oslo
+PublicKey = <FILL_PUBKEY:oslo>
+Endpoint = oslo.example.net:51820
+AllowedIPs = 10.66.0.2/32
+PersistentKeepalive = 25
+```
+
+Exporting the fleet as JSON:
+
+```
+$ meshvpn export --config examples/fleet.conf | head -8
 {
-"nodes": [
-  {
-    "id": "node-1",
-    "ip": "192.168.1.100",
-    "status": "online"
+  "fleet": {
+    "node_count": 4,
+    "listen_port_default": 51820,
+    "keepalive_default": 25
   },
-  {
-    "id": "node-2",
-    "ip": "10.0.0.200",
-    "status": "offline"
-  },
-  {
-    "id": "node-3",
-    "ip": "172.16.31.100",
-    "status": "online"
-  }
-],
-"edges": [
-  {
-    "from": "node-1",
-    "to": "node-2",
-    "status": "established"
-  },
-  {
-    "from": "node-2",
-    "to": "node-3",
-    "status": "established"
-  }
-],
-"summary": {
-  "nodes_online": 2,
-  "edges_established": 2
-}
-}
+  "nodes": [
+    { "name": "berlin", "endpoint": "berlin.example.net:51820", ...
 ```
 
-<!-- cognis:example:end -->
+## Topologies
+
+- **mesh** — every node peers with every other.
+- **hub** — the first node is the hub; spokes peer only with it.
+- **partial** — the first node is a hub that peers with all; other nodes also peer within their shared `group` label (intra-region mesh + cross-region hub, without a full N² mesh).
+
+`generate` and `graph` share the same peering predicate, so a rendered graph always matches the configs that would be generated.
 
 ## Why placeholders, not keys
 
-Generating private keys inside a deploy helper invites them into version
-control, CI logs, and shared scratch dirs. meshvpn refuses to do that. Every
-generated `[Interface]` carries:
-
-```
-PrivateKey = <FILL_FROM_SECRET: wg genkey>
-```
-
-and every `[Peer]` carries a per-node `PublicKey` placeholder like
-`<FILL_PUBKEY:berlin>`. You mint real keys out-of-band and inject them from
-your secret store:
+Generating private keys inside a deploy helper invites them into version control, CI logs, and shared scratch dirs. meshvpn refuses. Mint keys out of band and inject from your secret store:
 
 ```sh
 wg genkey | tee berlin.private | wg pubkey > berlin.public
 # then substitute berlin.private into wg0.conf via your secret manager
 ```
 
-The bundled `.gitignore` blocks `*.private`, `*.key`, `*.pem`, etc. so key
-material never gets committed by accident.
+`meshvpn keygen --config <file>` prints a ready-to-review script that does exactly this for every node — but **meshvpn never runs it and never sees the output**.
 
 ## Install
 
+### Linux / macOS
 ```sh
-git clone <your-fork> meshvpn
-cd meshvpn
-chmod +x meshvpn.sh
-./meshvpn.sh --help
+./install.sh                 # installs a `meshvpn` wrapper into ~/.local/bin
+meshvpn --help
 ```
 
-## Config format
-
-Line-oriented and clean-room (authored from the documented WireGuard config
-model, not copied from any project). `#` starts a comment; blank lines are
-ignored. The **first** `[node]` block is treated as the hub for hub-spoke.
-
-```ini
-listen_port = 51820            # optional global default (overridable per node)
-
-[node]
-name        = berlin
-endpoint    = berlin.example.net:51820   # public host:port (WireGuard is UDP)
-overlay_ip  = 10.66.0.1/32               # this node's overlay address
-allowed_ips = 10.66.0.1/32               # routes this node advertises to peers
+### Windows
+meshvpn is a POSIX shell tool; run it under **Git Bash**, **WSL**, or **MSYS2**.
+```powershell
+./install.ps1                # drops a meshvpn.cmd wrapper on PATH that calls bash
 ```
 
-See [`examples/fleet.conf`](examples/fleet.conf) for a four-node fleet.
+### Docker
+```sh
+docker build -t meshvpn .
+docker run --rm -v "$PWD:/work" meshvpn validate --config /work/examples/fleet.conf
+```
 
-## Commands
+### Make
+```sh
+make check                   # shellcheck + tests
+make demo                    # end-to-end demo
+```
 
-### validate
+## Tests & demo
 
 ```sh
-./meshvpn.sh validate --config examples/fleet.conf
+bash tests/run.sh            # 47 assertions, fully offline (no WireGuard, no network)
+bash examples/demo.sh        # runnable end-to-end demo
 ```
 
-Parses the config and checks:
+The suite covers validate (well-formed + duplicate name, overlay collision, bad CIDR/port/MTU/DNS, IPv6), lint advisories, generate for **mesh/hub/partial** (peer counts, placeholder presence, optional-field propagation, and an assertion that **no real base64 key** ever appears), graph in all three formats, export/keygen, and healthcheck dry-run + JSON. CI runs `shellcheck` plus the suite and demo on **Ubuntu and macOS**.
 
-- at least one node
-- unique node names
-- no overlay-IP collisions (compares the address, ignoring prefix)
-- valid endpoint `host:port` (IPv4 literal or DNS name; port 1-65535)
-- valid `overlay_ip` CIDR and valid `allowed_ips` CIDR list
+## Architecture
 
-Exits **non-zero** if any problem is found (every problem is printed to stderr).
-
-### generate
-
-```sh
-# full mesh: every node peers with every other
-./meshvpn.sh generate --config examples/fleet.conf --topology mesh --out ./out
-
-# hub-spoke: first node is the hub; spokes peer only with the hub
-./meshvpn.sh generate --config examples/fleet.conf --topology hub --out ./out
-```
-
-Writes one `wgN.conf` per node (`wg0.conf`, `wg1.conf`, ...) where `wg0`
-corresponds to the first node in the config. Each file contains:
-
-- exactly one `[Interface]` block (`Address`, `ListenPort`, placeholder `PrivateKey`)
-- one `[Peer]` block per peer (placeholder `PublicKey`, `Endpoint`, `AllowedIPs`,
-  `PersistentKeepalive = 25`)
-
-In **mesh**, every node gets `N-1` peers. In **hub**, the hub gets `N-1` peers
-and each spoke gets exactly `1` (the hub). generate refuses to run on a config
-that fails `validate`.
-
-### healthcheck
-
-```sh
-# dry-run: list endpoint targets, NO network activity at all
-./meshvpn.sh healthcheck --config examples/fleet.conf --dry-run
-
-# live: best-effort advisory TCP reachability probe per endpoint
-./meshvpn.sh healthcheck --config examples/fleet.conf
-```
-
-The live probe uses bash `/dev/tcp` only as a reachability hint. WireGuard is
-UDP, so a closed TCP port does **not** prove a node is down -- treat live
-results as advisory.
-
-## Layout
-
-```
-meshvpn/
-  meshvpn.sh              # entrypoint + subcommand dispatch
-  lib/
-    common.sh             # logging, trim, small helpers
-    netutil.sh            # IPv4 / CIDR / port / endpoint-host validators
-    config.sh             # pure-bash fleet config parser
-    validate.sh           # semantic fleet validation
-    generate.sh           # WireGuard config emitter (placeholders only)
-    healthcheck.sh        # endpoint listing + advisory probe
-  examples/
-    fleet.conf            # authored 4-node example
-  tests/
-    run.sh                # self-contained suite (no WireGuard, no network)
-  .github/workflows/ci.yml
-  .gitignore
-  README.md
-```
-
-## Tests
-
-```sh
-bash tests/run.sh
-```
-
-The suite runs entirely offline: it validates the example, generates mesh and
-hub configs into a temp dir and asserts peer counts and placeholder presence
-(and that **no real base64 private keys** appear), checks that bad configs
-(duplicate name, overlay-IP collision, bad CIDR, missing field, bad port) fail
-non-zero, and confirms `healthcheck --dry-run` lists every endpoint without any
-network probe. The runner exits non-zero on any failure.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Security notes
 
 - No real key material is ever produced or handled.
-- `validate` rejects malformed input before any config is emitted.
-- `generate` will not run on an invalid fleet.
-- `.gitignore` blocks common key file patterns.
+- `validate` rejects malformed input before any config is emitted; `generate` refuses to run on an invalid fleet.
+- The live `healthcheck` probe is a best-effort TCP hint — WireGuard is UDP, so a closed TCP port does **not** prove a node is down. Treat live results as advisory.
 
-License: COCL 1.0
+## License
+
+COCL 1.0 — see [LICENSE](LICENSE). Commercial use → licensing@cognis.digital

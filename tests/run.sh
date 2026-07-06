@@ -2,9 +2,9 @@
 # meshvpn - self-contained test suite (plain bash; no WireGuard, no network)
 # Maintainer: Cognis Digital  |  License: COCL 1.0
 #
-# Exercises validate / generate (mesh & hub) / healthcheck --dry-run against
-# the bundled example plus a set of deliberately broken fixtures generated in
-# a temp dir. Exits non-zero if any assertion fails.
+# Exercises validate / lint / generate (mesh, hub, partial) / graph / export /
+# keygen / healthcheck against the bundled examples plus deliberately broken
+# fixtures generated in a temp dir. Exits non-zero if any assertion fails.
 
 set -u
 
@@ -12,12 +12,16 @@ TESTS_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -P "$TESTS_DIR/.." && pwd)"
 MV="$ROOT/meshvpn.sh"
 EXAMPLE="$ROOT/examples/fleet.conf"
+DC="$ROOT/examples/datacenter.conf"
 
 PASS=0
 FAIL=0
 
 ok()   { PASS=$((PASS + 1)); printf '  ok   - %s\n' "$1"; }
 bad()  { FAIL=$((FAIL + 1)); printf '  FAIL - %s\n' "$1"; }
+
+# result <ok?> <desc> : ok? is 0 for pass, non-zero for fail.
+result() { if [ "$1" -eq 0 ]; then ok "$2"; else bad "$2"; fi; }
 
 # assert_pass <desc> <cmd...> : command must exit 0.
 assert_pass() {
@@ -43,8 +47,12 @@ echo
 echo "[validate]"
 assert_pass "validate passes on bundled example" \
     bash "$MV" validate --config "$EXAMPLE"
+assert_pass "validate passes on datacenter example (optional fields)" \
+    bash "$MV" validate --config "$DC"
 
-# Fixture: duplicate node name.
+JOUT="$(bash "$MV" validate --config "$EXAMPLE" --json 2>/dev/null)"
+case "$JOUT" in *'"valid": true'*) ok "validate --json reports valid=true" ;; *) bad "validate --json missing valid=true" ;; esac
+
 DUP="$WORK/dup_name.conf"
 cat > "$DUP" <<'EOF'
 [node]
@@ -58,10 +66,8 @@ endpoint = b.example.net:51820
 overlay_ip = 10.66.0.2/32
 allowed_ips = 10.66.0.2/32
 EOF
-assert_fail "validate fails on duplicate node name" \
-    bash "$MV" validate --config "$DUP"
+assert_fail "validate fails on duplicate node name" bash "$MV" validate --config "$DUP"
 
-# Fixture: overlay-IP collision (same address, any prefix).
 COLL="$WORK/overlap_ip.conf"
 cat > "$COLL" <<'EOF'
 [node]
@@ -75,10 +81,8 @@ endpoint = b.example.net:51820
 overlay_ip = 10.66.0.1/24
 allowed_ips = 10.66.0.1/32
 EOF
-assert_fail "validate fails on overlay-IP collision" \
-    bash "$MV" validate --config "$COLL"
+assert_fail "validate fails on overlay-IP collision" bash "$MV" validate --config "$COLL"
 
-# Fixture: bad CIDR.
 BADCIDR="$WORK/bad_cidr.conf"
 cat > "$BADCIDR" <<'EOF'
 [node]
@@ -87,10 +91,8 @@ endpoint = a.example.net:51820
 overlay_ip = 10.66.0.300/33
 allowed_ips = 10.66.0.1/32
 EOF
-assert_fail "validate fails on bad CIDR" \
-    bash "$MV" validate --config "$BADCIDR"
+assert_fail "validate fails on bad CIDR" bash "$MV" validate --config "$BADCIDR"
 
-# Fixture: missing required field (no endpoint).
 MISSING="$WORK/missing.conf"
 cat > "$MISSING" <<'EOF'
 [node]
@@ -98,10 +100,8 @@ name = alpha
 overlay_ip = 10.66.0.1/32
 allowed_ips = 10.66.0.1/32
 EOF
-assert_fail "validate fails on missing endpoint" \
-    bash "$MV" validate --config "$MISSING"
+assert_fail "validate fails on missing endpoint" bash "$MV" validate --config "$MISSING"
 
-# Fixture: bad port.
 BADPORT="$WORK/bad_port.conf"
 cat > "$BADPORT" <<'EOF'
 [node]
@@ -110,8 +110,63 @@ endpoint = a.example.net:99999
 overlay_ip = 10.66.0.1/32
 allowed_ips = 10.66.0.1/32
 EOF
-assert_fail "validate fails on out-of-range port" \
-    bash "$MV" validate --config "$BADPORT"
+assert_fail "validate fails on out-of-range port" bash "$MV" validate --config "$BADPORT"
+
+BADMTU="$WORK/bad_mtu.conf"
+cat > "$BADMTU" <<'EOF'
+[node]
+name = alpha
+endpoint = a.example.net:51820
+overlay_ip = 10.66.0.1/32
+allowed_ips = 10.66.0.1/32
+mtu = 99999
+EOF
+assert_fail "validate fails on out-of-range mtu" bash "$MV" validate --config "$BADMTU"
+
+BADDNS="$WORK/bad_dns.conf"
+cat > "$BADDNS" <<'EOF'
+[node]
+name = alpha
+endpoint = a.example.net:51820
+overlay_ip = 10.66.0.1/32
+allowed_ips = 10.66.0.1/32
+dns = not-an-ip
+EOF
+assert_fail "validate fails on bad dns server" bash "$MV" validate --config "$BADDNS"
+
+V6="$WORK/v6.conf"
+cat > "$V6" <<'EOF'
+[node]
+name = a
+endpoint = a.example.net:51820
+overlay_ip = fd00::1/128
+allowed_ips = fd00::1/128
+[node]
+name = b
+endpoint = b.example.net:51820
+overlay_ip = fd00::2/128
+allowed_ips = fd00::2/128
+EOF
+assert_pass "validate accepts IPv6 overlay CIDRs" bash "$MV" validate --config "$V6"
+
+echo
+# -------------------------------------------------------------------------
+echo "[lint]"
+assert_pass "lint passes on clean example" bash "$MV" lint --config "$EXAMPLE"
+WIDE="$WORK/wide.conf"
+cat > "$WIDE" <<'EOF'
+[node]
+name = a
+endpoint = a.example.net:51820
+overlay_ip = 10.66.0.1/24
+allowed_ips = 0.0.0.0/0
+[node]
+name = b
+endpoint = b.example.net:51820
+overlay_ip = 10.66.0.2/32
+allowed_ips = 10.66.0.2/32
+EOF
+assert_fail "lint warns on wide overlay prefix / default-route exit" bash "$MV" lint --config "$WIDE"
 
 echo
 # -------------------------------------------------------------------------
@@ -120,52 +175,33 @@ MESH_OUT="$WORK/mesh"
 assert_pass "generate mesh succeeds" \
     bash "$MV" generate --config "$EXAMPLE" --topology mesh --out "$MESH_OUT"
 
-# Count nodes in the example (number of [node] headers).
 NODE_COUNT="$(grep -c '^\[node\]' "$EXAMPLE")"
 EXPECT_PEERS=$((NODE_COUNT - 1))
 
-# One conf per node.
 GEN_COUNT="$(find "$MESH_OUT" -maxdepth 1 -name 'wg*.conf' | wc -l | tr -d ' ')"
-if [ "$GEN_COUNT" -eq "$NODE_COUNT" ]; then
-    ok "mesh emits one conf per node ($GEN_COUNT == $NODE_COUNT)"
-else
-    bad "mesh conf count $GEN_COUNT != node count $NODE_COUNT"
-fi
+result "$([ "$GEN_COUNT" -eq "$NODE_COUNT" ] && echo 0 || echo 1)" \
+    "mesh emits one conf per node ($GEN_COUNT == $NODE_COUNT)"
 
-# Each conf has N-1 [Peer] blocks.
-mesh_peers_ok=1
+mesh_peers_ok=0
 for f in "$MESH_OUT"/wg*.conf; do
     p="$(grep -c '^\[Peer\]' "$f")"
-    if [ "$p" -ne "$EXPECT_PEERS" ]; then
-        mesh_peers_ok=0
-        echo "    $f has $p peers, expected $EXPECT_PEERS"
-    fi
+    [ "$p" -ne "$EXPECT_PEERS" ] && mesh_peers_ok=1
 done
-if [ "$mesh_peers_ok" -eq 1 ]; then
-    ok "each mesh conf has N-1 ($EXPECT_PEERS) [Peer] blocks"
-else
-    bad "some mesh conf has wrong [Peer] count"
-fi
+result "$mesh_peers_ok" "each mesh conf has N-1 ($EXPECT_PEERS) [Peer] blocks"
 
-# Each conf has exactly one [Interface] block.
-mesh_iface_ok=1
+mesh_iface_ok=0
 for f in "$MESH_OUT"/wg*.conf; do
     n="$(grep -c '^\[Interface\]' "$f")"
-    [ "$n" -eq 1 ] || { mesh_iface_ok=0; echo "    $f has $n [Interface] blocks"; }
+    [ "$n" -eq 1 ] || mesh_iface_ok=1
 done
-[ "$mesh_iface_ok" -eq 1 ] && ok "each mesh conf has exactly one [Interface]" \
-    || bad "some mesh conf has wrong [Interface] count"
+result "$mesh_iface_ok" "each mesh conf has exactly one [Interface]"
 
-# Every conf has the private-key placeholder.
-mesh_ph_ok=1
+mesh_ph_ok=0
 for f in "$MESH_OUT"/wg*.conf; do
-    grep -q 'PrivateKey = <FILL_FROM_SECRET' "$f" || { mesh_ph_ok=0; echo "    $f missing placeholder"; }
+    grep -q 'PrivateKey = <FILL_FROM_SECRET' "$f" || mesh_ph_ok=1
 done
-[ "$mesh_ph_ok" -eq 1 ] && ok "every mesh conf uses a PrivateKey placeholder" \
-    || bad "a mesh conf is missing the PrivateKey placeholder"
+result "$mesh_ph_ok" "every mesh conf uses a PrivateKey placeholder"
 
-# No real private keys: WireGuard keys are 44-char base64 ending in '='.
-# Assert no PrivateKey line carries such a literal.
 if grep -RhE '^PrivateKey = [A-Za-z0-9+/]{43}=' "$MESH_OUT" >/dev/null 2>&1; then
     bad "mesh conf appears to contain a real base64 private key"
 else
@@ -179,69 +215,88 @@ HUB_OUT="$WORK/hub"
 assert_pass "generate hub succeeds" \
     bash "$MV" generate --config "$EXAMPLE" --topology hub --out "$HUB_OUT"
 
-# Hub is wg0 (first node). It should have N-1 peers.
 HUB_PEERS="$(grep -c '^\[Peer\]' "$HUB_OUT/wg0.conf")"
-if [ "$HUB_PEERS" -eq "$EXPECT_PEERS" ]; then
-    ok "hub (wg0) has N-1 ($EXPECT_PEERS) [Peer] blocks"
-else
-    bad "hub has $HUB_PEERS peers, expected $EXPECT_PEERS"
-fi
+result "$([ "$HUB_PEERS" -eq "$EXPECT_PEERS" ] && echo 0 || echo 1)" \
+    "hub (wg0) has N-1 ($EXPECT_PEERS) [Peer] blocks"
 
-# Each spoke (wg1..) should have exactly 1 peer (the hub).
-spoke_ok=1
+spoke_ok=0
 for f in "$HUB_OUT"/wg*.conf; do
-    base="$(basename "$f")"
-    [ "$base" = "wg0.conf" ] && continue
+    [ "$(basename "$f")" = "wg0.conf" ] && continue
     p="$(grep -c '^\[Peer\]' "$f")"
-    if [ "$p" -ne 1 ]; then
-        spoke_ok=0
-        echo "    $f has $p peers, expected 1"
-    fi
+    [ "$p" -ne 1 ] && spoke_ok=1
 done
-[ "$spoke_ok" -eq 1 ] && ok "each spoke has exactly one [Peer] (the hub)" \
-    || bad "a spoke has the wrong [Peer] count"
+result "$spoke_ok" "each spoke has exactly one [Peer] (the hub)"
 
-# Spoke's single peer must be the hub node (berlin).
 HUB_NAME="$(grep -m1 '^name' "$EXAMPLE" | sed 's/.*=//; s/^[[:space:]]*//; s/[[:space:]]*$//')"
-spoke_peer_ok=1
+spoke_peer_ok=0
 for f in "$HUB_OUT"/wg*.conf; do
-    base="$(basename "$f")"
-    [ "$base" = "wg0.conf" ] && continue
-    grep -q "^# peer: $HUB_NAME$" "$f" || { spoke_peer_ok=0; echo "    $f peer is not $HUB_NAME"; }
+    [ "$(basename "$f")" = "wg0.conf" ] && continue
+    grep -q "^# peer: $HUB_NAME$" "$f" || spoke_peer_ok=1
 done
-[ "$spoke_peer_ok" -eq 1 ] && ok "each spoke peers with the hub '$HUB_NAME'" \
-    || bad "a spoke peers with something other than the hub"
+result "$spoke_peer_ok" "each spoke peers with the hub '$HUB_NAME'"
 
-# No real private keys in hub output either.
-if grep -RhE '^PrivateKey = [A-Za-z0-9+/]{43}=' "$HUB_OUT" >/dev/null 2>&1; then
-    bad "hub conf appears to contain a real base64 private key"
+echo
+# -------------------------------------------------------------------------
+echo "[generate partial]"
+PART_OUT="$WORK/partial"
+assert_pass "generate partial succeeds" \
+    bash "$MV" generate --config "$DC" --topology partial --out "$PART_OUT"
+result "$([ "$(grep -c '^\[Peer\]' "$PART_OUT/wg0.conf")" -eq 3 ] && echo 0 || echo 1)" \
+    "partial hub (gw) has 3 peers"
+result "$([ "$(grep -c '^\[Peer\]' "$PART_OUT/wg1.conf")" -eq 2 ] && echo 0 || echo 1)" \
+    "partial us-a peers with hub + same-group us-b (2)"
+result "$([ "$(grep -c '^\[Peer\]' "$PART_OUT/wg3.conf")" -eq 1 ] && echo 0 || echo 1)" \
+    "partial eu-a peers with hub only (1)"
+if grep -q '^DNS = 10.80.0.1' "$PART_OUT/wg1.conf"; then ok "DNS field emitted for us-a"; else bad "DNS not emitted"; fi
+if grep -q '^MTU = 1420' "$PART_OUT/wg0.conf"; then ok "MTU field emitted for gw"; else bad "MTU not emitted"; fi
+if grep -q '^PersistentKeepalive = 15' "$PART_OUT/wg0.conf"; then ok "per-node keepalive override applied"; else bad "keepalive override missing"; fi
+
+echo
+# -------------------------------------------------------------------------
+echo "[graph / export / keygen]"
+assert_pass "graph ascii succeeds" bash "$MV" graph --config "$EXAMPLE" --topology hub
+assert_pass "graph dot succeeds" bash "$MV" graph --config "$EXAMPLE" --format dot
+assert_pass "graph mermaid succeeds" bash "$MV" graph --config "$EXAMPLE" --format mermaid
+assert_fail "graph rejects unknown format" bash "$MV" graph --config "$EXAMPLE" --format svg
+
+DOT="$(bash "$MV" graph --config "$EXAMPLE" --topology mesh --format dot 2>/dev/null)"
+case "$DOT" in *'graph meshvpn {'*) ok "dot output has a graph header" ;; *) bad "dot output malformed" ;; esac
+
+EXPORT="$(bash "$MV" export --config "$EXAMPLE" 2>/dev/null)"
+case "$EXPORT" in *'"node_count": 4'*) ok "export reports node_count" ;; *) bad "export missing node_count" ;; esac
+case "$EXPORT" in *'"is_hub": true'*) ok "export marks the hub node" ;; *) bad "export missing is_hub" ;; esac
+
+KG="$(bash "$MV" keygen --config "$EXAMPLE" 2>/dev/null)"
+case "$KG" in *'wg genkey'*) ok "keygen emits the wg genkey workflow" ;; *) bad "keygen missing wg genkey" ;; esac
+if printf '%s' "$KG" | grep -qE '[A-Za-z0-9+/]{43}='; then
+    bad "keygen output contains a real base64 key"
 else
-    ok "no real (base64) private keys present in hub output"
+    ok "keygen output contains no real key material"
 fi
 
 echo
 # -------------------------------------------------------------------------
-echo "[healthcheck --dry-run]"
+echo "[healthcheck]"
 DRY="$(bash "$MV" healthcheck --config "$EXAMPLE" --dry-run 2>&1)"
 DRY_RC=$?
-[ "$DRY_RC" -eq 0 ] && ok "healthcheck --dry-run exits 0" || bad "healthcheck --dry-run exit $DRY_RC"
+result "$DRY_RC" "healthcheck --dry-run exits 0"
 
-# Every endpoint from the config must appear in the dry-run output.
-dry_ok=1
+dry_ok=0
 while IFS= read -r ep; do
     ep="$(printf '%s' "$ep" | sed 's/.*=//; s/^[[:space:]]*//; s/[[:space:]]*$//')"
     [ -z "$ep" ] && continue
-    printf '%s' "$DRY" | grep -qF "$ep" || { dry_ok=0; echo "    missing endpoint: $ep"; }
+    printf '%s' "$DRY" | grep -qF "$ep" || dry_ok=1
 done < <(grep '^endpoint' "$EXAMPLE")
-[ "$dry_ok" -eq 1 ] && ok "dry-run lists every configured endpoint" \
-    || bad "dry-run missing one or more endpoints"
+result "$dry_ok" "dry-run lists every configured endpoint"
 
-# Dry-run must NOT have printed any failure markers (proves no network probe).
 if printf '%s' "$DRY" | grep -q '\[fail\]'; then
     bad "dry-run unexpectedly performed a live probe"
 else
     ok "dry-run performed no live probe"
 fi
+
+HCJSON="$(bash "$MV" healthcheck --config "$EXAMPLE" --json 2>/dev/null)"
+case "$HCJSON" in *'"targets"'*) ok "healthcheck --json emits targets" ;; *) bad "healthcheck --json missing targets" ;; esac
 
 echo
 # -------------------------------------------------------------------------

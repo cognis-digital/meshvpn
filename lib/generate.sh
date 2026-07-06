@@ -37,8 +37,9 @@ mv_generate() {
 
     case "$topology" in
         mesh|hub) : ;;
+        partial) : ;;
         *)
-            mv_err "unknown topology '$topology' (use mesh or hub)"
+            mv_err "unknown topology '$topology' (use mesh, hub, or partial)"
             return 2
             ;;
     esac
@@ -81,9 +82,12 @@ mv_generate() {
             printf '# %s overlay address\n' "$name"
             printf 'Address = %s\n' "$overlay"
             printf 'ListenPort = %s\n' "$listen_port"
+            [ -n "${MV_NODE_DNS[i]}" ] && printf 'DNS = %s\n' "${MV_NODE_DNS[i]}"
+            [ -n "${MV_NODE_MTU[i]}" ] && printf 'MTU = %s\n' "${MV_NODE_MTU[i]}"
             printf 'PrivateKey = %s\n' "$MV_PRIVKEY_PLACEHOLDER"
             printf '\n'
 
+            local mygroup="${MV_NODE_GROUP[i]}"
             for ((j = 0; j < MV_NODE_COUNT; j++)); do
                 [ "$j" -eq "$i" ] && continue
 
@@ -94,18 +98,29 @@ mv_generate() {
                     if [ "$i" -ne 0 ] && [ "$j" -ne 0 ]; then
                         continue
                     fi
+                elif [ "$topology" = "partial" ]; then
+                    # In partial: node 0 is a hub that peers with all; otherwise
+                    # two nodes peer only if they share a non-empty group label.
+                    local pgroup="${MV_NODE_GROUP[j]}"
+                    if [ "$i" -ne 0 ] && [ "$j" -ne 0 ]; then
+                        if [ -z "$mygroup" ] || [ "$mygroup" != "$pgroup" ]; then
+                            continue
+                        fi
+                    fi
                 fi
 
                 local pname="${MV_NODE_NAME[j]}"
                 local pendpoint="${MV_NODE_ENDPOINT[j]}"
                 local pallowed="${MV_NODE_ALLOWED[j]}"
+                local pka="${MV_NODE_KEEPALIVE[j]}"
+                [ -z "$pka" ] && pka="$MV_KEEPALIVE_DEFAULT"
 
                 printf '[Peer]\n'
                 printf '# peer: %s\n' "$pname"
                 printf 'PublicKey = %s\n' "$(_mv_pubkey_placeholder "$pname")"
                 printf 'Endpoint = %s\n' "$pendpoint"
                 printf 'AllowedIPs = %s\n' "$pallowed"
-                printf 'PersistentKeepalive = 25\n'
+                printf 'PersistentKeepalive = %s\n' "$pka"
                 printf '\n'
             done
         } > "$conf" || {

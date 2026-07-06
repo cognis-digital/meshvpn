@@ -24,8 +24,14 @@ MV_NODE_NAME=()
 MV_NODE_ENDPOINT=()
 MV_NODE_OVERLAY=()
 MV_NODE_ALLOWED=()
+# Optional per-node fields (empty string when unset):
+MV_NODE_DNS=()          # DNS server(s) for the [Interface]
+MV_NODE_MTU=()          # interface MTU
+MV_NODE_KEEPALIVE=()    # PersistentKeepalive override (seconds)
+MV_NODE_GROUP=()        # group label used by the 'partial' topology
 MV_NODE_COUNT=0
 MV_LISTEN_PORT_DEFAULT=51820
+MV_KEEPALIVE_DEFAULT=25
 
 # Reset parser state. Useful for tests that parse multiple files in one process.
 mv_config_reset() {
@@ -33,8 +39,13 @@ mv_config_reset() {
     MV_NODE_ENDPOINT=()
     MV_NODE_OVERLAY=()
     MV_NODE_ALLOWED=()
+    MV_NODE_DNS=()
+    MV_NODE_MTU=()
+    MV_NODE_KEEPALIVE=()
+    MV_NODE_GROUP=()
     MV_NODE_COUNT=0
     MV_LISTEN_PORT_DEFAULT=51820
+    MV_KEEPALIVE_DEFAULT=25
 }
 
 # Parse a fleet config file into the MV_NODE_* arrays.
@@ -55,6 +66,7 @@ mv_config_parse() {
 
     local in_node=0
     local cur_name="" cur_endpoint="" cur_overlay="" cur_allowed=""
+    local cur_dns="" cur_mtu="" cur_keepalive="" cur_group=""
     local lineno=0
     local line key val raw
 
@@ -65,8 +77,13 @@ mv_config_parse() {
         MV_NODE_ENDPOINT+=("$cur_endpoint")
         MV_NODE_OVERLAY+=("$cur_overlay")
         MV_NODE_ALLOWED+=("$cur_allowed")
+        MV_NODE_DNS+=("$cur_dns")
+        MV_NODE_MTU+=("$cur_mtu")
+        MV_NODE_KEEPALIVE+=("$cur_keepalive")
+        MV_NODE_GROUP+=("$cur_group")
         MV_NODE_COUNT=$((MV_NODE_COUNT + 1))
         cur_name=""; cur_endpoint=""; cur_overlay=""; cur_allowed=""
+        cur_dns=""; cur_mtu=""; cur_keepalive=""; cur_group=""
     }
 
     while IFS= read -r raw || [ -n "$raw" ]; do
@@ -107,7 +124,12 @@ mv_config_parse() {
             # Global (pre-node) settings.
             case "$key" in
                 listen_port)
+                    # shellcheck disable=SC2034  # consumed by generate.sh/export.sh
                     MV_LISTEN_PORT_DEFAULT="$val"
+                    ;;
+                persistent_keepalive|keepalive)
+                    # shellcheck disable=SC2034  # consumed by generate.sh/export.sh
+                    MV_KEEPALIVE_DEFAULT="$val"
                     ;;
                 *)
                     mv_err "line $lineno: unknown global key: $key"
@@ -118,10 +140,14 @@ mv_config_parse() {
         fi
 
         case "$key" in
-            name)        cur_name="$val" ;;
-            endpoint)    cur_endpoint="$val" ;;
-            overlay_ip)  cur_overlay="$val" ;;
-            allowed_ips) cur_allowed="$val" ;;
+            name)                     cur_name="$val" ;;
+            endpoint)                 cur_endpoint="$val" ;;
+            overlay_ip)               cur_overlay="$val" ;;
+            allowed_ips)              cur_allowed="$val" ;;
+            dns)                      cur_dns="$val" ;;
+            mtu)                      cur_mtu="$val" ;;
+            persistent_keepalive|keepalive) cur_keepalive="$val" ;;
+            group)                    cur_group="$val" ;;
             *)
                 mv_err "line $lineno: unknown node key: $key"
                 return 2

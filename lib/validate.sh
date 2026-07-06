@@ -63,16 +63,16 @@ mv_validate_fleet() {
             fi
         fi
 
-        # overlay_ip required: a CIDR.
+        # overlay_ip required: a CIDR (IPv4 or IPv6).
         if [ -z "$overlay" ]; then
             mv_err "$label: missing 'overlay_ip'"
             errors=$((errors + 1))
-        elif ! mv_is_cidr "$overlay"; then
+        elif ! mv_is_any_cidr "$overlay"; then
             mv_err "$label: invalid overlay_ip CIDR '$overlay'"
             errors=$((errors + 1))
         fi
 
-        # allowed_ips required: comma-separated CIDR list.
+        # allowed_ips required: comma-separated CIDR list (IPv4 or IPv6).
         if [ -z "$allowed" ]; then
             mv_err "$label: missing 'allowed_ips'"
             errors=$((errors + 1))
@@ -85,11 +85,62 @@ mv_validate_fleet() {
             for c in "${cidrs[@]}"; do
                 trimmed="$(mv_trim "$c")"
                 [ -z "$trimmed" ] && continue
-                if ! mv_is_cidr "$trimmed"; then
+                if ! mv_is_any_cidr "$trimmed"; then
                     mv_err "$label: invalid allowed_ips CIDR '$trimmed'"
                     errors=$((errors + 1))
                 fi
             done
+        fi
+
+        # Optional: mtu must be 576-9000 if present.
+        local mtu="${MV_NODE_MTU[i]}"
+        if [ -n "$mtu" ]; then
+            case "$mtu" in
+                ''|*[!0-9]*) mv_err "$label: mtu '$mtu' is not numeric"; errors=$((errors + 1)) ;;
+                *) if [ "$mtu" -lt 576 ] || [ "$mtu" -gt 9000 ]; then
+                       mv_err "$label: mtu '$mtu' out of range (576-9000)"; errors=$((errors + 1))
+                   fi ;;
+            esac
+        fi
+
+        # Optional: persistent_keepalive must be 0-65535 if present.
+        local ka="${MV_NODE_KEEPALIVE[i]}"
+        if [ -n "$ka" ]; then
+            case "$ka" in
+                ''|*[!0-9]*) mv_err "$label: keepalive '$ka' is not numeric"; errors=$((errors + 1)) ;;
+                *) if [ "$ka" -gt 65535 ]; then
+                       mv_err "$label: keepalive '$ka' out of range (0-65535)"; errors=$((errors + 1))
+                   fi ;;
+            esac
+        fi
+
+        # Optional: dns must be a comma-separated list of IPv4/IPv6 literals.
+        local dns="${MV_NODE_DNS[i]}"
+        if [ -n "$dns" ]; then
+            local IFS=','
+            # shellcheck disable=SC2206
+            local servers=($dns)
+            unset IFS
+            local d dt
+            for d in "${servers[@]}"; do
+                dt="$(mv_trim "$d")"
+                [ -z "$dt" ] && continue
+                if ! mv_is_ipv4 "$dt" && ! mv_is_ipv6 "$dt"; then
+                    mv_err "$label: invalid dns server '$dt'"
+                    errors=$((errors + 1))
+                fi
+            done
+        fi
+
+        # Optional: group label must use safe characters.
+        local grp="${MV_NODE_GROUP[i]}"
+        if [ -n "$grp" ]; then
+            case "$grp" in
+                *[!a-zA-Z0-9._-]*)
+                    mv_err "$label: group '$grp' has invalid characters (use a-z 0-9 . _ -)"
+                    errors=$((errors + 1))
+                    ;;
+            esac
         fi
     done
 
