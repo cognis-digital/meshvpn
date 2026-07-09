@@ -5,23 +5,39 @@ on:
   pull_request:
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Install shellcheck
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: shellcheck (fail on warning+)
+        run: shellcheck -x --severity=warning meshvpn.sh lib/*.sh tests/run.sh
 
-      - name: Lint with shellcheck (if available)
-        run: |
-          if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck -x meshvpn.sh lib/*.sh tests/run.sh
-          else
-            echo "shellcheck not available; skipping lint"
-          fi
-
-      - name: Run test suite
+  test:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash version
+        run: bash --version | head -1
+      - name: run test suite
         run: bash tests/run.sh
+      - name: run demo (end-to-end, offline)
+        run: bash examples/demo.sh
+
+  posix-sh:
+    # Confirm the entrypoint and installer degrade under a strict POSIX sh path.
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install onto PATH and smoke-test
+        run: |
+          sh install.sh --prefix "$HOME/.local"
+          "$HOME/.local/bin/meshvpn" --version
+          "$HOME/.local/bin/meshvpn" validate --config examples/fleet.conf

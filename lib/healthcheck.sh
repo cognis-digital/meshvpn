@@ -77,3 +77,25 @@ mv_tcp_probe() {
         ( : >"/dev/tcp/$host/$port" ) >/dev/null 2>&1
     fi
 }
+
+# Emit healthcheck targets as JSON (no network probe). Requires MV_NODE_*.
+mv_healthcheck_json() {
+    if [ "$MV_NODE_COUNT" -eq 0 ]; then
+        mv_err "no nodes to check"
+        return 2
+    fi
+    local i
+    printf '{\n  "targets": [\n'
+    for ((i = 0; i < MV_NODE_COUNT; i++)); do
+        local host port
+        host="$(mv_endpoint_host "${MV_NODE_ENDPOINT[i]}")"
+        port="$(mv_endpoint_port "${MV_NODE_ENDPOINT[i]}")"
+        printf '    { "name": "%s", "host": "%s", "port": "%s" }' \
+            "$(mv_json_escape "${MV_NODE_NAME[i]}")" \
+            "$(mv_json_escape "$host")" \
+            "$(mv_json_escape "$port")"
+        if [ "$i" -eq $((MV_NODE_COUNT - 1)) ]; then printf '\n'; else printf ',\n'; fi
+    done
+    printf '  ]\n}\n'
+    return 0
+}

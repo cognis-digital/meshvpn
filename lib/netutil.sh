@@ -95,3 +95,77 @@ mv_is_port() {
     fi
     [ "$p" -ge 1 ] && [ "$p" -le 65535 ]
 }
+
+# Return success if $1 is a syntactically plausible IPv6 address.
+# Accepts full and '::'-compressed forms. Not a canonicaliser; a sanity gate.
+mv_is_ipv6() {
+    local ip="$1"
+    [ -n "$ip" ] || return 1
+    # Must contain a colon and only hex digits, colons.
+    case "$ip" in
+        *:*) : ;;
+        *) return 1 ;;
+    esac
+    case "$ip" in
+        *[!0-9A-Fa-f:]*) return 1 ;;
+    esac
+    # At most one '::' compression.
+    local rest="${ip#*::}"
+    if [ "$rest" != "$ip" ]; then
+        case "$rest" in
+            *::*) return 1 ;;
+        esac
+    fi
+    # Each hextet at most 4 chars. Split on ':' and check.
+    local IFS=':'
+    # shellcheck disable=SC2206
+    local parts=($ip)
+    unset IFS
+    local h
+    for h in "${parts[@]}"; do
+        [ -z "$h" ] && continue           # from '::'
+        [ "${#h}" -le 4 ] || return 1
+    done
+    return 0
+}
+
+# Return success if $1 is a valid IPv6 CIDR like fd00::/64 (prefix 0-128).
+mv_is_cidr6() {
+    local cidr="$1"
+    case "$cidr" in
+        */*) : ;;
+        *) return 1 ;;
+    esac
+    local addr="${cidr%%/*}"
+    local pfx="${cidr#*/}"
+    [ "${addr}/${pfx}" = "$cidr" ] || return 1
+    mv_is_ipv6 "$addr" || return 1
+    case "$pfx" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    if [ "${#pfx}" -gt 1 ] && [ "${pfx:0:1}" = "0" ]; then
+        return 1
+    fi
+    [ "$pfx" -le 128 ]
+}
+
+# Return success if $1 is a valid IPv4 OR IPv6 CIDR.
+mv_is_any_cidr() {
+    mv_is_cidr "$1" || mv_is_cidr6 "$1"
+}
+
+# JSON-escape a string on stdout (quotes, backslashes, control chars).
+mv_json_escape() {
+    local s="$1" out="" c i bs=$'\\'
+    for ((i = 0; i < ${#s}; i++)); do
+        c="${s:i:1}"
+        case "$c" in
+            '"')     out="$out$bs\"" ;;
+            "$bs")   out="$out$bs$bs" ;;
+            $'\t')   out="${out}${bs}t" ;;
+            $'\n')   out="${out}${bs}n" ;;
+            *)       out="$out$c" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
